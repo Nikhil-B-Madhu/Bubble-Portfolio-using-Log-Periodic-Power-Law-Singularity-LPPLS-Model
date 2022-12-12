@@ -1,0 +1,1 @@
+# Bubble-Portfolio-using-Log-Periodic-Power-Law-Singularity-LPPLS-Model.
