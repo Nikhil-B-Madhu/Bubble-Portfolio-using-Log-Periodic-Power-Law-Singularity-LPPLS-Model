@@ -1,0 +1,139 @@
+---
+title: "DTSC 5301 Group Project Data Science for Finance"
+---z
+---
+
+# Tactical Asset Allocation with a Bubble Signal
+
+## Authors
+
+-   Josh Nielsen, josh.nielsen\@colorado.edu
+
+-   Charan Kanwal Preet Singh chch4792\@colorado.edu
+
+-   Nikhil Madhu Belavinakodige, nibe7119\@colorado.edu
+
+-   Om Sai Madala, omma5510\@colrado.edu
+
+-   Anup Bhutada, anbh1796\@colorado.edu
+
+## Introduction
+
+Tactical asset allocation (TAA) is an active portfolio management practice where a portfolio manager allocates percentages of their assets toward certain categories of financial instruments based on some signal. In this notebook, we compare the performance of two portfolios: an equally weighted portfolio and a portfolio whose weights are determined by a bubble signal. When there is a strong bubble signal we allocate to a risk-off portfolio compromised fully of debt instruments. When there is a strong negative bubble signal we allocate to a risk-on portfolio comprised fully of equity instruments. When there is neither a strong positive nor a negative bubble signal, we allocate to a 60/40 portfolio where 60% of our assets are in equity and 40% are in debt instruments. Below are the exchange traded funds we use for our analysis. We compare the cumulative returns for our bubble portfolio to a 60/40 portfolio from `START_DATE` to `END_DATE`.
+
+| ETF Ticker                                                                              | Allocation | Underlying Asset | Description                                                                                                                                                                   |
+|:--------------|:-----------|:-----------|:----------------------------------|
+| [VTI](https://investor.vanguard.com/etf/profile/VTI)                                    | 20%        | Equity           | Seeks to track the performance of the CRSP US Total Market Index. Large- mid- and small-cap equity diversified across growth and value styles.                                |
+| [VTV](https://investor.vanguard.com/etf/profile/VTV)                                    | 20%        | Equity           | Seeks to track the performance of the CRSP US Large Cap Value Index which measures the investment return of large-capitalization value stocks.                                |
+| [VBR](https://investor.vanguard.com/etf/profile/VBR)                                    | 20%        | Equity           | Seeks to track the performance of the CRSP US Small Cap Value Index which measures the investment return of small-capitalization value stocks.                                |
+| [TLT](https://www.ishares.com/us/products/239454/ishares-20-year-treasury-bond-etf)     | 20%        | Debt             | The iShares 20+ Year Treasury Bond ETF seeks to track the investment results of an index composed of U.S. Treasury bonds with remaining maturities greater than twenty years. |
+| [AGG](https://www.ishares.com/us/products/239458/ishares-core-total-us-bond-market-etf) | 20%        | Debt             | The iShares Core U.S. Aggregate Bond ETF seeks to track the investment results of an index composed of the total U.S. investment-grade bond market.                           |
+
+## General Imports and Constants
+
+```{r, results = FALSE}
+library('tidyverse')
+library('ggplot2')
+library('dplyr')
+# constants
+POS_BUBBLE_THRESHOLD = 0.15
+NEG_BUBBLE_THRESHOLD = 0.15
+UNIVERSE_REMOTE_URL = 'https://raw.githubusercontent.com/Joshwani/DataScience5301GroupProject/main/data/universe.csv'
+CONF_REMOTE_URL = 'https://raw.githubusercontent.com/Joshwani/DataScience5301GroupProject/main/data/confidence.csv'
+```
+
+## Fetching Universe Data (Yahoo! Finance)
+
+Yahoo! Finance computes an Adjusted Closing price that factors in all splits and dividends, see [here](https://help.yahoo.com/kb/SLN28256.html). For the sake of simplicity and reproduce-ability, in our analysis, we are simply loading the data sets that were previously fetched from Yahoo! Finance.
+
+```{r}
+# read universe.csv into df var, set Date col as row name
+df <- read.csv(UNIVERSE_REMOTE_URL, row.names = 'Date')
+```
+
+## Creating the Benchmark
+
+```{r}
+# compute daily percent change
+df_pct_chg <- na.omit((df-lag(df, 1))/lag(df, 1))
+# create a 60/40 portfolio
+df_pct_chg$Benchmark <- apply(df_pct_chg, 1, mean)
+df_pct_chg$BenchmarkCumulativeReturns <- cumprod(1+df_pct_chg$Benchmark)-1
+# add date as a col of type Date
+df_pct_chg$Date = as.Date(rownames(df_pct_chg))
+# visualize it
+ggplot(df_pct_chg, aes(x=Date)) + geom_line(aes(y=BenchmarkCumulativeReturns))
+```
+
+## Bubble Model
+
+Is it possible to avoid the large draw-downs and capitalize on the run-ups? Here we use the [Log-Periodic Power Law Singularity (LPPLS) Model](https://en.wikipedia.org/wiki/Didier_Sornette#The_JLS_and_LPPLS_models). It describes a bubble as a faster-than-exponential increase in asset price that reflects positive feedback loop of higher return anticipations competing with negative feedback spirals of crash expectations. A bubble has a distinct signature that resembles a power law with a finite-time singularity decorated by oscillations with a frequency increasing with time.
+
+If we can identify bubbles, then we can use them as an indicator for our tactical asset allocation strategy.
+
+The first step is to compute the bubble indicators for the benchmark. Here we are importing the signal pre-computed from Boulder Investment Technologies GitHub Repository.
+
+### Load Bubble Data
+
+```{r}
+bubble_df<- read.csv(CONF_REMOTE_URL, row.names='time')
+bubble_df$Date <- as.Date(rownames(bubble_df))
+```
+
+```{r}
+# join data frames. df + bubble df on date
+m_df <- merge(df_pct_chg, bubble_df, by='Date')
+m_df$BenchmarkCumulativeReturns <- cumprod(1+m_df$Benchmark)-1
+```
+
+### Visualize Bubble Data
+
+Here we plot the positive and negative bubble indicators along with the thresholds at which they will trigger an allocation signal for our strategy. Note, the thresholds have been chosen rather arbitrarily.
+
+```{r}
+ggplot(m_df, aes(x=Date)) + 
+  geom_line(aes(y=BenchmarkCumulativeReturns)) + 
+  geom_line(aes(y=conf), color='red') +
+  geom_hline(yintercept=c(POS_BUBBLE_THRESHOLD, -NEG_BUBBLE_THRESHOLD), color='grey', linetype="dashed")
+```
+
+## Construct Bubble Portfolio
+
+```{r}
+m_df <- m_df %>% mutate(BubblePortfolio = case_when(
+  conf >= POS_BUBBLE_THRESHOLD ~ ((m_df$TLT.Adj.Close * .5) + (m_df$AGG.Adj.Close * .5)), 
+  conf <= -NEG_BUBBLE_THRESHOLD ~ ((m_df$VTI.Adj.Close * .333) + (m_df$VBR.Adj.Close * .333) + (m_df$VTV.Adj.Close * .333)),
+  -NEG_BUBBLE_THRESHOLD < conf & conf < POS_BUBBLE_THRESHOLD ~ ((m_df$VTI.Adj.Close *.2) + (m_df$VBR.Adj.Close * .2) + (m_df$VTV.Adj.Close * .2) + (m_df$TLT.Adj.Close * .2) + (m_df$AGG.Adj.Close * .2))
+))
+m_df$BubblePortfolioCumulativeReturns <- cumprod(1+m_df$BubblePortfolio)-1
+ggplot(m_df, aes(x=Date)) + 
+  geom_line(aes(y=BenchmarkCumulativeReturns), color='red') + 
+  geom_line(aes(y=BubblePortfolioCumulativeReturns), color='green') +
+  labs(x="Date", y="Benchmark (red)\nvs\nBubble Portfolio (green)")
+```
+
+## Can bias have any affect in the field?
+
+Since the dataset contains only stock details of a particular company, there is no specific bias as such in the dataset. But, when dealing with finance, there are lots of biases which place an important role in the decision-making process. A few types of bias are:
+
+1.  Herd behaviour/Bias: This is a kind of bias that states that people often imitate the financial habits of the vast majority of the herd, according to the theory of herd behaviour. In the stock market, herding is infamous for causing jarring rallies and sell-offs.
+
+2.  Emotional Gap: Decision-making based on strong emotions or emotional strains, such as anxiety, anger, fear, or enthusiasm, is known as the "emotional gap." Emotions are frequently a major factor in why people don't make logical decisions in financing.
+
+3.  Self-attribution: This type of bias is based on overconfidence in one's skills which affect decision-making. This can sometimes lead to financial losses.
+
+4.  Confirmation Bias: Investors who exhibit confirmation bias tend to favour information that supports their already convictions about a certain investment. Investors quickly accept new information, even if it is inaccurate, to confirm that their investment decision was correct.
+
+5.  Experiential bias: When investors' memories of previous occurrences sway them or make them believe the event is far more likely to repeat itself, this is known as experiential bias. It also goes by the names recency bias and availability bias for this reason.
+
+6.  Loss Aversion: Investors who prioritize their fear of losses over their enjoyment of market gains are said to be loss averse. In other words, they're much more likely to strive to give preventing losses a greater priority than achieving financial gains.
+
+All of these bias plays an important role in the decision-making process and these can be avoided by gathering as much information as possible before making any decisions. Taking more time to analyse the situation by using models or getting situational awareness can help in minimizing the role of bias.
+
+## Conclusion
+
+The bubble portfolio does a nice job of avoiding the covid crash of 2020. However, it doesn't really add much more value other than that. There are a variety of parameters we could play with but that would likely just leave us overfit in some regard. This brings up an interesting point about bias when working on trading strategies. I think we could loosely call it p-hacking where we fiddle with certain parameters until we have a very nice looking backtest that is grossly overfit.
+
+```{r}
+sessionInfo()
+```
